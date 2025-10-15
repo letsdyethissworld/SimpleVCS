@@ -6,7 +6,6 @@ Basic usage example for Simple VCS
 import os
 import tempfile
 from pathlib import Path
-from src.simple_vcs.core import SimpleVCS
 
 def main():
     print("=== Simple VCS Basic Usage Example ===")
@@ -16,36 +15,31 @@ def main():
         os.chdir(tmpdir)
         print(f"Working in: {tmpdir}")
         
-        # Initialize repository
-        vcs = SimpleVCS()
-        vcs.init()
+        # Initialize VCS
+        os.system("svcs init")
         
         # Create some files
         Path("hello.txt").write_text("Hello, VCS!")
         Path("readme.md").write_text("# My Project\n\nThis is a test project.")
         
-        # Add files to index
-        print("\n1. Adding files to index:")
-        vcs.add("hello.txt")
-        vcs.add("readme.md")
+        # Add files and commit
+        print("\n1. Adding files and creating initial commit:")
+        os.system("svcs add hello.txt readme.md")
+        os.system('svcs commit -m "Initial commit"')
         
-        # Create first commit
-        print("\n2. Creating first commit:")
-        vcs.commit("Initial commit with basic files")
-        
-        # Modify a file
-        print("\n3. Modifying hello.txt:")
+        # Modify a file and create second commit
+        print("\n2. Modifying file and creating second commit:")
         Path("hello.txt").write_text("Hello, VCS! This is modified.")
-        vcs.add("hello.txt")
-        vcs.commit("Update greeting message")
+        os.system("svcs add hello.txt")
+        os.system('svcs commit -m "Update greeting"')
         
         # Show history
-        print("\n4. Commit history:")
-        vcs.log()
+        print("\n3. Commit history:")
+        os.system("svcs log")
         
         # Show status
-        print("\n5. Current status:")
-        vcs.status()
+        print("\n4. Current status:")
+        os.system("svcs status")
         
         print("\n=== Example completed ===")
 

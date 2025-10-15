@@ -36,6 +36,15 @@ venv.bak/
 *.swp
 *.swo
 
-# VCS data (для тестирования нашей же VCS)
+# VCS data
 test_repo/
 *.vcs_data/
+.simple_vcs/
+
+# Testing
+.pytest_cache/
+.coverage
+htmlcov/
+
+# Logs
+*.log
