@@ -1,8 +1,9 @@
 from typing import List, Optional, Dict
 from pathlib import Path
 from datetime import datetime
+import fnmatch
 
-from ..domain.models import Commit, Index, Tree, Diff
+from ..domain.models import Commit, Index, Tree, Diff, ChangeType
 from ..domain.repositories import (
     ObjectRepository, ReferenceRepository, 
     IndexRepository, WorktreeRepository
@@ -46,20 +47,39 @@ class AddService:
         self.worktree_repo = worktree_repo
         self.hash_service = hash_service
     
+    def _should_ignore(self, file_path: str) -> bool:
+        """Проверить, нужно ли игнорировать файл"""
+        ignore_patterns = [
+            "venv/", "__pycache__/", "*.pyc", ".DS_Store", "Thumbs.db"
+        ]
+        for pattern in ignore_patterns:
+            if pattern.endswith('/') and file_path.startswith(pattern):
+                return True
+            if file_path.startswith(pattern.replace('*', '')):
+                return True
+        return False
+    
     def execute(self, file_paths: List[str]) -> str:
         """Добавить файлы в индекс"""
         index = self.index_repo.get_index()
+        valid_files = []
         
         for file_path in file_paths:
             if not self.worktree_repo.file_exists(file_path):
                 raise FileNotFoundError(f"File {file_path} does not exist")
             
+            # Пропускаем игнорируемые файлы
+            if self._should_ignore(file_path):
+                print(f"Ignoring {file_path} (matches ignore patterns)")
+                continue
+            
             content = self.worktree_repo.read_file(file_path)
             blob_hash = self.object_repo.save_blob(content)
             index.entries[file_path] = blob_hash
+            valid_files.append(file_path)
         
         self.index_repo.save_index(index)
-        return f"Added {len(file_paths)} files to index"
+        return f"Added {len(valid_files)} files to index"
 
 class CommitService:
     """Сервис для создания коммитов"""
@@ -188,8 +208,6 @@ class LogService:
             commit_hash = commit.parent_hashes[0] if commit.parent_hashes else None
 
 class StatusService:
-    """Сервис для показа статуса репозитория"""
-    
     def __init__(self,
                  object_repo: ObjectRepository,
                  index_repo: IndexRepository,
@@ -198,15 +216,44 @@ class StatusService:
         self.index_repo = index_repo
         self.worktree_repo = worktree_repo
     
+    def _should_ignore(self, file_path: str) -> bool:
+        """Строгая фильтрация - игнорируем целые директории"""
+        normalized_path = file_path.replace('\\', '/')
+        
+        # Разбиваем путь на части
+        path_parts = normalized_path.split('/')
+        
+        # Игнорируем если любая часть пути совпадает с игнорируемыми
+        ignore_dirs = {'venv', '__pycache__', '.git', '.svcs'}
+        for part in path_parts:
+            if part in ignore_dirs:
+                return True
+        
+        # Игнорируем файлы с определенными расширениями
+        ignore_extensions = {'.pyc', '.pyo', '.pyd'}
+        if any(normalized_path.endswith(ext) for ext in ignore_extensions):
+            return True
+            
+        # Игнорируем системные файлы
+        ignore_files = {'.ds_store', 'thumbs.db'}
+        if any(part.lower() in ignore_files for part in path_parts):
+            return True
+            
+        return False
+    
     def execute(self):
         """Показать статус репозитория"""
         print("Repository status:")
         
-        # Проверяем изменения между рабочими файлами и индексом
         index = self.index_repo.get_index()
         has_changes = False
         
-        for file_path in self.worktree_repo.list_files():
+        # Получаем и фильтруем файлы рабочей директории
+        all_worktree_files = self.worktree_repo.list_files()
+        worktree_files = [f for f in all_worktree_files if not self._should_ignore(f)]
+        
+        # Проверяем новые/измененные файлы
+        for file_path in worktree_files:
             if file_path not in index.entries:
                 print(f"untracked: {file_path}")
                 has_changes = True
@@ -217,9 +264,10 @@ class StatusService:
                     print(f"modified: {file_path}")
                     has_changes = True
         
-        # Проверяем удаленные файлы
+        # Проверяем удаленные файлы (только неигнорируемые)
         for file_path in index.entries:
-            if not self.worktree_repo.file_exists(file_path):
+            if (not self.worktree_repo.file_exists(file_path) and 
+                not self._should_ignore(file_path)):
                 print(f"deleted: {file_path}")
                 has_changes = True
         
@@ -517,3 +565,162 @@ class DiffServiceApp:
                         )
                         for line in file_diff:
                             print(line)
+                            
+class ShowService:
+    """Сервис для показа содержимого файлов из репозитория"""
+    
+    def __init__(self,
+                 object_repo: ObjectRepository,
+                 reference_repo: ReferenceRepository):
+        self.object_repo = object_repo
+        self.reference_repo = reference_repo
+    
+    def execute_file(self, file_path: str, commit_hash: str = None) -> str:
+        """Показать содержимое файла из указанного коммита или HEAD"""
+        # Если коммит не указан, используем текущий
+        if not commit_hash:
+            current_branch = self.reference_repo.get_current_branch()
+            if not current_branch:
+                raise ValueError("Not on any branch and no commit specified")
+            commit_hash = self.reference_repo.get_branch_commit(current_branch)
+            if not commit_hash:
+                raise ValueError("No commits yet")
+        
+        return self._get_file_content(commit_hash, file_path)
+    
+    def execute_commit(self, commit_hash: str) -> str:
+        """Показать информацию о коммите"""
+        commit = self.object_repo.get_commit(commit_hash)
+        if not commit:
+            raise ValueError(f"Commit {commit_hash} not found")
+        
+        # Форматируем вывод коммита
+        timestamp = commit.timestamp.strftime("%Y-%m-%d %H:%M:%S")
+        result = [
+            f"commit {commit_hash}",
+            f"Author: {commit.author}",
+            f"Date: {timestamp}",
+            f"",
+            f"    {commit.message}",
+            f""
+        ]
+        
+        # Показываем изменения в коммите
+        if commit.parent_hashes:
+            parent_commit = self.object_repo.get_commit(commit.parent_hashes[0])
+            if parent_commit:
+                parent_tree = self.object_repo.get_tree(parent_commit.tree_hash)
+                current_tree = self.object_repo.get_tree(commit.tree_hash)
+                
+                # Простой diff статистика
+                result.extend(self._get_commit_stats(parent_tree, current_tree))
+        
+        return "\n".join(result)
+    
+    def _get_file_content(self, commit_hash: str, file_path: str) -> str:
+        """Получить содержимое файла из коммита"""
+        commit = self.object_repo.get_commit(commit_hash)
+        if not commit:
+            raise ValueError(f"Commit {commit_hash} not found")
+        
+        tree = self.object_repo.get_tree(commit.tree_hash)
+        if not tree:
+            raise ValueError(f"Tree for commit {commit_hash} not found")
+        
+        if file_path not in tree.entries:
+            raise ValueError(f"File {file_path} not found in commit {commit_hash}")
+        
+        blob_hash = tree.entries[file_path]
+        blob = self.object_repo.get_blob(blob_hash)
+        if not blob:
+            raise ValueError(f"Blob for file {file_path} not found")
+        
+        return blob.content
+    
+    def _get_commit_stats(self, old_tree: Tree, new_tree: Tree) -> List[str]:
+        """Получить статистику изменений в коммите"""
+        stats = []
+        added = 0
+        modified = 0
+        deleted = 0
+        
+        all_files = set(old_tree.entries.keys()) | set(new_tree.entries.keys())
+        
+        for file_path in all_files:
+            old_hash = old_tree.entries.get(file_path)
+            new_hash = new_tree.entries.get(file_path)
+            
+            if not old_hash and new_hash:
+                stats.append(f"    + {file_path}")
+                added += 1
+            elif old_hash and not new_hash:
+                stats.append(f"    - {file_path}")
+                deleted += 1
+            elif old_hash != new_hash:
+                stats.append(f"    * {file_path}")
+                modified += 1
+        
+        if stats:
+            summary = f"Changes: {added} added, {modified} modified, {deleted} deleted"
+            return [summary, ""] + stats
+        
+        return []
+
+class RestoreService:
+    """Сервис для восстановления файлов из репозитория"""
+    
+    def __init__(self,
+                 object_repo: ObjectRepository,
+                 reference_repo: ReferenceRepository,
+                 worktree_repo: WorktreeRepository,
+                 index_repo: IndexRepository):
+        self.object_repo = object_repo
+        self.reference_repo = reference_repo
+        self.worktree_repo = worktree_repo
+        self.index_repo = index_repo
+    
+    def execute(self, file_path: str, commit_hash: str = None, staged: bool = False) -> str:
+        """Восстановить файл из коммита или индекса"""
+        if staged:
+            # Восстановление из индекса
+            return self._restore_from_index(file_path)
+        else:
+            # Восстановление из коммита
+            return self._restore_from_commit(file_path, commit_hash)
+    
+    def _restore_from_commit(self, file_path: str, commit_hash: str = None) -> str:
+        """Восстановить файл из коммита"""
+        # Если коммит не указан, используем HEAD
+        if not commit_hash:
+            current_branch = self.reference_repo.get_current_branch()
+            if not current_branch:
+                raise ValueError("Not on any branch and no commit specified")
+            commit_hash = self.reference_repo.get_branch_commit(current_branch)
+            if not commit_hash:
+                raise ValueError("No commits yet")
+        
+        # Получаем содержимое файла из коммита
+        show_service = ShowService(self.object_repo, self.reference_repo)
+        content = show_service.execute_file(file_path, commit_hash)
+        
+        # Записываем в рабочую директорию
+        self.worktree_repo.write_file(file_path, content)
+        
+        return f"Restored {file_path} from commit {commit_hash[:8]}"
+    
+    def _restore_from_index(self, file_path: str) -> str:
+        """Восстановить файл из индекса"""
+        index = self.index_repo.get_index()
+        
+        if file_path not in index.entries:
+            raise ValueError(f"File {file_path} not found in index")
+        
+        blob_hash = index.entries[file_path]
+        blob = self.object_repo.get_blob(blob_hash)
+        if not blob:
+            raise ValueError(f"Blob for file {file_path} not found")
+        
+        # Записываем в рабочую директорию
+        self.worktree_repo.write_file(file_path, blob.content)
+        
+        return f"Restored {file_path} from index"

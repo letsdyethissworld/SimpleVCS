@@ -54,7 +54,7 @@ class FileObjectRepository(ObjectRepository):
             "message": commit.message,
             "author": commit.author,
             "timestamp": commit.timestamp.isoformat(),
-            "committer": commit.committer
+            "commiter": commit.commiter
         }
         serialized = json.dumps(commit_data, sort_keys=True)
         commit_hash = self._compute_hash(serialized)
@@ -75,7 +75,7 @@ class FileObjectRepository(ObjectRepository):
             message=data["message"],
             author=data["author"],
             timestamp=datetime.fromisoformat(data["timestamp"]),
-            committer=data.get("committer", data["author"])
+            commiter=data.get("commiter", data["author"])
         )
     
     def exists(self, hash: str) -> bool:

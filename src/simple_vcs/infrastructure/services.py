@@ -36,7 +36,7 @@ class SimpleCommitService(CommitService):
             message=message,
             author=author,
             timestamp=datetime.now(),
-            committer=author
+            commiter=author
         )
         return self.object_repo.save_commit(commit)
 
